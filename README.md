@@ -6,13 +6,18 @@
 
 - `docs/ooh_estimation_methods.md`：各省OOH增加值及其占GDP比重的估算数据方案。
 - `scripts/lianjia_rent_scraper.py`：从链家网抓取租金数据并计算平均租金的脚本。
+- `scripts/collect_provincial_rents.py`：抓取多个城市并汇总省级平均租金。
 
 ## 使用说明
 
 1. 准备好各省住宅存量与GDP等基础数据。
-2. 使用 `scripts/lianjia_rent_scraper.py` 抓取主要城市的租金水平：
+2. 使用 `scripts/lianjia_rent_scraper.py` 抓取单个城市的租金水平：
    ```bash
    python scripts/lianjia_rent_scraper.py bj sh sz
    ```
-3. 根据 `docs/ooh_estimation_methods.md` 中的步骤，将租金数据与住房存量结合，计算省级OOH及其占比。
+3. 使用 `scripts/collect_provincial_rents.py` 汇总省级平均租金：
+   ```bash
+   python scripts/collect_provincial_rents.py --pages 3
+   ```
+4. 根据 `docs/ooh_estimation_methods.md` 中的步骤，将租金数据与住房存量结合，计算省级OOH及其占比。
 
