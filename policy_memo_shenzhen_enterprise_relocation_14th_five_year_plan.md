@@ -161,6 +161,7 @@
 | 原因（多选） | 成本、政策等 | 成本+政策 |
 | 自述/推断 | 企业自述/外部推断 | 企业自述 |
 | 备注 | 分步、是否扩产 | 新设产线 |
+- **实地示例落地**：已基于深交所公告生成 2 条真实事件卡片（兆新股份石岩工业园城市更新搬迁；深粮控股西丽高铁枢纽土地整备搬迁补偿），统一保存在文本格式的 CSV（`data/event_cards_cninfo.csv`）中，避免在仓库提交二进制文件。如需 Excel，可使用脚本的 `--xlsx-out` 参数一键导出。
 
 ### 3. 行业分类表
 - 见“行业分类框架”章节，可在 Excel/数据库中作为维度表（字段：大类、子类、示例行业）。
@@ -170,12 +171,14 @@
 - **披露清单**：在正式报告附录列出每条事件卡片链接、证据强度、更新日期，便于复核。
 
 ### 5. 数据爬取落地方案（新增）
-- **自动化脚本**：仓库新增 `scraper.py`，可从深圳新闻网（企业新闻线索）与深圳生态环境局环评公示（制造项目外迁线索）抓取标题级事件，生成“事件卡片”CSV（默认 `data/event_cards.csv`）。
+- **自动化脚本**：仓库新增 `scraper.py`，可直接联网从巨潮资讯（上市公司搬迁公告）、深圳新闻网（企业新闻线索）与深圳生态环境局环评公示（制造项目外迁线索）抓取标题级事件，生成“事件卡片”CSV（默认 `data/event_cards.csv`）。支持以 `--from-html` 解析已下载的 HTML/JSON，方便在内网或代理受限环境先离线验证解析规则。
 - **使用示例**：
-  - `python scraper.py --source sznews --keywords 深圳 企业 外迁 制造 --limit 30 --out data/event_cards_sznews.csv`
-  - `python scraper.py --source eia --limit 50 --out data/event_cards_eia.csv`
+  - 巨潮资讯联网抓取（分页拉满 300+ 条）：`python scraper.py --source cninfo --keywords 搬迁 --limit 320 --start-date 2021-01-01 --end-date 2025-12-31 --out data/event_cards_cninfo_full.csv`
+  - 同步导出 Excel：`python scraper.py --source cninfo --keywords 搬迁 --limit 320 --start-date 2021-01-01 --end-date 2025-12-31 --out data/event_cards_cninfo_full.csv --xlsx-out data/event_cards_cninfo_full.xlsx`
+  - 深圳新闻网：`python scraper.py --source sznews --keywords 深圳 企业 外迁 制造 --limit 30 --out data/event_cards_sznews.csv`
+  - 内网离线解析环评：`python scraper.py --source eia --from-html data/local_eia.html --limit 50 --out data/event_cards_eia.csv`
 - **字段映射**：脚本输出字段与事件卡片口径一致（公司、年份、功能、去向、证据链接/类型/强度、原因、标题/摘要、来源），可直接并入 Excel 底稿后再补充人工验证与公司抽取。
-- **网络限制与健壮性**：脚本自动读取代理环境变量，未抓取到记录时仍输出空表并提示；解析失败会抛出来源提示，便于调整 CSS 选择器或目标 URL。
+- **网络限制与健壮性**：脚本自动读取代理环境变量，网络不可达时给出明确报错；未抓取到记录时仍输出空表并提示；解析失败会抛出来源提示，便于调整 CSS 选择器或目标 URL。
 
 ---
 
