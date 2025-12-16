@@ -30,6 +30,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, List, Optional
 
+import time
+
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -96,12 +98,37 @@ def fetch_html(url: str) -> str:
 
 
 def fetch_json(url: str, params: dict) -> str:
-    try:
-        resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=20)
-    except requests.RequestException as exc:
-        raise SystemExit(f"Network request failed: {exc}") from exc
-    resp.raise_for_status()
-    return resp.text
+    last_exc: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=20)
+            status = resp.status_code
+            if 500 <= status < 600:
+                if attempt < 2:
+                    time.sleep(1 + attempt)
+                    continue
+                print(
+                    f"Warning: upstream 5xx (status {status}) for page {params.get('pageNum')}; "
+                    "returning empty batch so downstream逻辑继续"
+                )
+                return json.dumps({"announcements": []})
+            resp.raise_for_status()
+            return resp.text
+        except requests.HTTPError as exc:
+            last_exc = exc
+            status = exc.response.status_code if exc.response else None
+            raise SystemExit(f"Network request failed with status {status}: {exc}") from exc
+        except requests.RequestException as exc:  # capture proxy/egress issues
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(1 + attempt)
+                continue
+            print(
+                f"Warning: network request failed after retries for page {params.get('pageNum')}: {exc}; returning empty batch"
+            )
+            return json.dumps({"announcements": []})
+    print(f"Warning: network request failed after retries: {last_exc}; returning empty batch")
+    return json.dumps({"announcements": []})
 
 
 def parse_sznews(html: str, keywords: Optional[List[str]] = None) -> Iterable[EventCard]:
@@ -163,6 +190,147 @@ def parse_eia(html: str, keywords: Optional[List[str]] = None) -> Iterable[Event
         )
 
 
+def classify_function(text: str) -> str:
+    """Infer relocation function from text heuristics aligned to memo definitions."""
+    manufacturing_keywords = [
+        "生产",
+        "厂",
+        "产线",
+        "产能",
+        "技改",
+        "建设",
+        "退城",
+        "搬迁补偿",
+        "搬迁",
+        "迁建",
+        "迁移",
+        "迁出",
+        "搬出",
+        "退区",
+        "异地",
+        "扩产",
+        "新建",
+        "投产",
+    ]
+    rd_keywords = ["研发", "实验室", "研发中心", "研发基地", "工程中心"]
+    ops_keywords = ["总部", "办公", "运营", "营销", "销售", "客服", "结算", "指挥中心", "区域中心", "事业部"]
+
+    flags = {
+        "制造": any(k in text for k in manufacturing_keywords),
+        "研发": any(k in text for k in rd_keywords),
+        "运营": any(k in text for k in ops_keywords),
+    }
+
+    matched = [k for k, v in flags.items() if v]
+    if len(matched) > 1:
+        return "+".join(sorted(matched)) + "外迁"
+    if flags["制造"]:
+        return "制造基地外迁"
+    if flags["研发"]:
+        return "研发中心外迁"
+    if flags["运营"]:
+        return "运营中心外迁"
+    return "外迁功能未披露"
+
+
+def classify_destination(text: str) -> str:
+    """Extract destination city/province and bucket to memo's近岸/远岸格局 when possible."""
+    domestic = [
+        "上海",
+        "重庆",
+        "成都",
+        "杭州",
+        "苏州",
+        "南京",
+        "合肥",
+        "武汉",
+        "长沙",
+        "郑州",
+        "青岛",
+        "西安",
+        "南昌",
+        "昆明",
+        "东莞",
+        "惠州",
+        "佛山",
+        "珠海",
+        "汕头",
+        "揭阳",
+        "潮州",
+        "广西",
+        "海南",
+        "云南",
+        "四川",
+        "安徽",
+        "江苏",
+        "浙江",
+        "江西",
+        "湖北",
+        "湖南",
+        "河南",
+        "山东",
+        "广东",
+        "天津",
+        "北京",
+    ]
+    southeast_asia = ["越南", "泰国", "印尼", "马来西亚", "新加坡", "菲律宾"]
+    other_overseas = ["北美", "美国", "加拿大", "欧洲", "德国", "法国", "英国"]
+
+    for loc in domestic:
+        if loc in text:
+            return f"迁往{loc}（国内）"
+    for loc in southeast_asia:
+        if loc in text:
+            return f"迁往{loc}（东南亚）"
+    for loc in other_overseas:
+        if loc in text:
+            return f"迁往{loc}（海外）"
+    return "未披露（标题未含去向）"
+
+
+def classify_industry(text: str) -> str:
+    """Map text to memo-aligned industry buckets."""
+    mapping = [
+        ("电子信息", ["半导体", "芯片", "线路板", "电子", "信息", "通信", "显示", "模组", "智能终端"]),
+        ("装备制造", ["机械", "装备", "机床", "电梯", "制造", "工程机械", "机器人", "汽车", "零部件", "车身", "动力总成"]),
+        ("新能源", ["光伏", "风电", "储能", "锂", "氢", "电池", "电解液", "磷酸铁锂", "负极", "正极", "逆变", "光热"]),
+        ("材料", ["材料", "油墨", "化工", "涂料", "钢绳", "磷", "金属", "磁", "塑胶", "树脂", "膜"]),
+        ("生物医药与医疗器械", ["医药", "药", "生物", "医疗", "诊断", "器械", "体外", "制药"]),
+        ("物流与供应链", ["物流", "港口", "仓储", "供应链", "跨境", "冷链"]),
+        ("信息服务", ["数据", "云", "网络", "软件", "SaaS", "AI", "人工智能"]),
+        ("平台经济", ["平台", "电商", "互联网", "出行", "本地生活"]),
+        ("金融与专业服务", ["金融", "基金", "证券", "保险", "律所", "咨询", "设计"]),
+        ("其他服务业", ["服务", "培训", "教育", "文旅"]),
+    ]
+    for industry, keywords in mapping:
+        if any(k in text for k in keywords):
+            return industry
+    # Default fallback aligned with memo buckets
+    return "其他制造"
+
+
+def infer_reasons(text: str) -> List[str]:
+    """Infer reasons per memo's可编码维度 using keyword hints."""
+    reasons: List[str] = []
+    reason_keywords = [
+        ("成本因素", ["成本", "租金", "人工", "能耗", "降本", "费用"]),
+        ("空间与用地约束", ["腾退", "征收", "城市更新", "整备", "拆迁", "用地", "土地"]),
+        ("环保与合规压力", ["环保", "排放", "整改", "超标", "碳", "EHS"]),
+        ("供应链与物流", ["供应链", "配套", "零部件", "物流", "港口", "枢纽"]),
+        ("市场接近", ["客户", "主机厂", "市场", "交付", "订单", "销售"]),
+        ("人才与居住成本", ["人才", "研发团队", "研发人员", "校园", "招聘", "住房"]),
+        ("政策激励与园区承接", ["补偿", "补助", "补贴", "激励", "奖励", "园区", "招商", "协议"]),
+        ("融资与税负", ["融资", "税收", "税负", "免税", "上市", "募投"]),
+        ("国际环境与地缘风险", ["关税", "出口", "贸易", "国际", "海外", "风险"]),
+        ("企业战略调整", ["重组", "分拆", "并购", "剥离", "战略", "转型"]),
+    ]
+
+    for label, kws in reason_keywords:
+        if any(k in text for k in kws):
+            reasons.append(label)
+    return reasons
+
+
 def parse_cninfo(raw_json: str, keywords: Optional[List[str]] = None) -> Iterable[EventCard]:
     payload = json.loads(raw_json)
     for item in payload.get("announcements", []):
@@ -177,24 +345,18 @@ def parse_cninfo(raw_json: str, keywords: Optional[List[str]] = None) -> Iterabl
         url = f"https://static.cninfo.com.cn/{file_path}" if file_path else ""
         short_title = item.get("shortTitle") or title
 
-        # Heuristic: if title mentions 搬迁/迁建/搬迁补偿/搬迁公告 set function to manufacturing/operations pending judgment
-        function = "待判定"
-        lower_title = title
-        if any(k in lower_title for k in ["迁建", "搬迁", "迁移", "迁出", "腾退"]):
-            function = "制造或运营外迁待判定"
+        full_text = f"{title} {short_title}"
+        function = classify_function(full_text)
+        destination = classify_destination(full_text)
 
-        reasons: List[str] = []
-        if any(k in lower_title for k in ["腾退", "征收", "城市更新", "整备"]):
-            reasons.append("空间与用地约束")
-        if any(k in lower_title for k in ["补偿", "补助", "补贴", "激励"]):
-            reasons.append("政策激励与补偿")
+        reasons: List[str] = infer_reasons(full_text)
 
         yield EventCard(
             company=f"{company}({code})" if code else company,
             year=year,
             function=function,
-            destination="待判定",
-            industry="待分类",
+            destination=destination,
+            industry=classify_industry(full_text),
             raw_title=short_title,
             raw_summary=title,
             evidence_url=url,
